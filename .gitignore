@@ -1,0 +1,15 @@
+node_modules/
+artifacts/
+cache/
+typechain-types/
+coverage/
+coverage.json
+.env
+*.log
+
+# Relayer generated data
+relayer_data/
+relayer/data/
+scripts/deployed-addresses.json
+scripts/addresses-chainA.json
+scripts/addresses-chainB.json
