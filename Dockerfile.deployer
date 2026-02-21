@@ -1,0 +1,35 @@
+# Dockerfile.deployer
+# One-shot service: compiles Solidity contracts and deploys them to both chains.
+# Writes deployed-addresses.json to /app/data (shared volume with relayer).
+
+FROM node:18-alpine
+
+# Install build tools needed for native node modules
+RUN apk add --no-cache python3 make g++ curl
+
+WORKDIR /app
+
+# Install root dependencies (hardhat, ethers, etc.)
+COPY package.json package-lock.json* ./
+RUN npm ci --quiet 2>/dev/null || npm install --quiet
+
+# Copy Hardhat config and contracts
+COPY hardhat.config.js ./
+COPY contracts/ ./contracts/
+
+# Compile contracts
+RUN node node_modules/hardhat/internal/cli/cli.js compile --quiet 2>/dev/null || \
+    node_modules/.bin/hardhat compile || \
+    npx hardhat compile
+
+# Copy deployment scripts
+COPY scripts/ ./scripts/
+
+# Create data directory for output (will be overridden by volume mount)
+RUN mkdir -p /app/data
+
+# Override the output path so addresses go to the shared volume
+ENV ADDRESSES_OUTPUT_PATH=/app/data/deployed-addresses.json
+
+# On startup: run the master deploy script
+CMD ["node", "scripts/deploy.js"]
