@@ -1,0 +1,19 @@
+{
+    "name": "omnichain-relayer",
+    "version": "1.0.0",
+    "description": "Cross-chain relayer for Omnichain Asset Bridge",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "dev": "node --watch src/index.js"
+    },
+    "dependencies": {
+        "better-sqlite3": "^9.4.3",
+        "dotenv": "^16.4.5",
+        "ethers": "^6.11.1",
+        "winston": "^3.13.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
