@@ -7,23 +7,91 @@ A production-grade, two-chain asset bridge with cross-chain governance — built
 [![Hardhat](https://img.shields.io/badge/Hardhat-2.22-yellow.svg)](https://hardhat.org)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docker.com)
 
-## Architecture
+## 🏗️ Architecture
 
-```
-Chain A (Settlement) :8545            Chain B (Execution) :9545
-┌─────────────────────────┐          ┌─────────────────────────┐
-│  VaultToken (ERC20)     │          │  WrappedVaultToken      │
-│  BridgeLock             │◄─────────►  BridgeMint             │
-│  GovernanceEmergency    │  Relayer │  GovernanceVoting       │
-└─────────────────────────┘          └─────────────────────────┘
-                            ┌──────────────────┐
-                            │  Node.js Relayer │
-                            │  SQLite (WAL)    │
-                            │  3-block delays  │
-                            └──────────────────┘
+### System Overview
+
+```mermaid
+graph TB
+    subgraph ChainA["⛓️ Chain A — Settlement Chain (chainId: 1111, :8545)"]
+        VTK[VaultToken\nERC20]
+        BL[BridgeLock\nlock / unlock\nPausable + RBAC]
+        GE[GovernanceEmergency\npauseBridge / unpauseBridge]
+    end
+
+    subgraph Relayer["🔄 Relayer Service (Node.js)"]
+        RL[Event Listener\nLocked / Burned / ProposalPassed]
+        CONF[Confirmation Manager\n3-block depth]
+        DB[(SQLite DB\nprocessed_nonces\nlast_blocks)]
+        RETRY[Retry Logic\nExponential Backoff]
+    end
+
+    subgraph ChainB["⛓️ Chain B — Execution Chain (chainId: 2222, :9545)"]
+        WVTK[WrappedVaultToken\nERC20 mintable/burnable]
+        BM[BridgeMint\nmintWrapped / burn\nNonce Replay Protection]
+        GV[GovernanceVoting\ncreateProposal / vote / execute]
+    end
+
+    VTK -->|transferred to| BL
+    BL -->|Locked event| RL
+    RL --> CONF
+    CONF --> DB
+    DB --> RETRY
+    RETRY -->|mintWrapped| BM
+    BM -->|mints| WVTK
+
+    WVTK -->|balance for voting| GV
+    GV -->|ProposalPassed event| RL
+    RETRY -->|pauseBridge| GE
+    GE -->|pause| BL
+
+    BM -->|Burned event| RL
+    RETRY -->|unlock| BL
 ```
 
-See [architecture.md](./architecture.md) for detailed Mermaid diagrams.
+### Core Logic Flows
+
+#### 1. Asset Bridging (Lock & Mint)
+```mermaid
+sequenceDiagram
+    participant User
+    participant VaultToken as VaultToken (ChainA)
+    participant BridgeLock as BridgeLock (ChainA)
+    participant Relayer
+    participant BridgeMint as BridgeMint (ChainB)
+    participant WVTK as WrappedVaultToken (ChainB)
+
+    User->>VaultToken: approve(bridgeLock, amount)
+    User->>BridgeLock: lock(amount)
+    BridgeLock->>VaultToken: transferFrom(user, bridge, amount)
+    BridgeLock-->>Relayer: emit Locked(user, amount, nonce)
+    Relayer->>Relayer: wait 3 confirmations
+    Relayer->>BridgeMint: mintWrapped(user, amount, nonce)
+    BridgeMint->>WVTK: mint(user, amount)
+```
+
+#### 2. Cross-Chain Governance (Emergency Pause)
+```mermaid
+sequenceDiagram
+    participant Voter
+    participant GovernanceVoting as GovernanceVoting (ChainB)
+    participant Relayer
+    participant GovernanceEmergency as GovernanceEmergency (ChainA)
+    participant BridgeLock as BridgeLock (ChainA)
+
+    Voter->>GovernanceVoting: createProposal("EMERGENCY_PAUSE", data)
+    Voter->>GovernanceVoting: vote(proposalId, true)
+    Note over GovernanceVoting: Voting period ends
+    Voter->>GovernanceVoting: executeProposal(proposalId)
+    GovernanceVoting-->>Relayer: emit ProposalPassed(proposalId, data)
+    Relayer->>Relayer: wait 3 confirmations
+    Relayer->>GovernanceEmergency: pauseBridge(proposalId)
+    GovernanceEmergency->>BridgeLock: pause()
+```
+
+> [!TIP]
+> For detailed state machines, recovery flows, and replay protection diagrams, see the full [Architecture Guide](./architecture.md).
+
 
 ## 🚀 Quick Start
 
