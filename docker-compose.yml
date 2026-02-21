@@ -1,0 +1,139 @@
+version: '3.8'
+
+# ============================================================================
+# Omnichain Asset Bridge — Docker Compose Orchestration
+# ============================================================================
+# Services:
+#   chain-a   - Chain A (Settlement Chain), chainId=1111, port=8545
+#   chain-b   - Chain B (Execution Chain),  chainId=2222, port=9545
+#   deployer  - One-shot service that compiles & deploys all contracts
+#   relayer   - Node.js relayer service with SQLite persistence
+# ============================================================================
+
+services:
+
+  # ─── Chain A: Settlement Chain ─────────────────────────────────────────────
+  chain-a:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: bridge-chain-a
+    command:
+      - anvil
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8545"
+      - --chain-id
+      - "1111"
+      - --block-time
+      - "2"
+      - --accounts
+      - "10"
+      - --mnemonic
+      - "test test test test test test test test test test test junk"
+    ports:
+      - "8545:8545"
+    networks:
+      - bridge-net
+    healthcheck:
+      test:
+        - "CMD"
+        - "sh"
+        - "-c"
+        - "curl -sf -X POST http://localhost:8545 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\",\"params\":[],\"id\":1}' | grep -q '0x457'"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ─── Chain B: Execution Chain ──────────────────────────────────────────────
+  chain-b:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: bridge-chain-b
+    command:
+      - anvil
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "9545"
+      - --chain-id
+      - "2222"
+      - --block-time
+      - "2"
+      - --accounts
+      - "10"
+      - --mnemonic
+      - "test test test test test test test test test test test junk"
+    ports:
+      - "9545:9545"
+    networks:
+      - bridge-net
+    healthcheck:
+      test:
+        - "CMD"
+        - "sh"
+        - "-c"
+        - "curl -sf -X POST http://localhost:9545 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\",\"params\":[],\"id\":1}' | grep -q '0x8ae'"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ─── Deployer: Compiles & Deploys Contracts ────────────────────────────────
+  deployer:
+    build:
+      context: .
+      dockerfile: Dockerfile.deployer
+    container_name: bridge-deployer
+    environment:
+      - CHAIN_A_RPC_URL=http://chain-a:8545
+      - CHAIN_B_RPC_URL=http://chain-b:9545
+      - DEPLOYER_PRIVATE_KEY=${DEPLOYER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+    volumes:
+      # Share deployed-addresses.json with the relayer
+      - relayer_data:/app/data
+    networks:
+      - bridge-net
+    depends_on:
+      chain-a:
+        condition: service_healthy
+      chain-b:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── Relayer: Cross-chain Event Relayer ────────────────────────────────────
+  relayer:
+    build:
+      context: ./relayer
+      dockerfile: Dockerfile
+    container_name: bridge-relayer
+    restart: on-failure
+    environment:
+      - CHAIN_A_RPC_URL=http://chain-a:8545
+      - CHAIN_B_RPC_URL=http://chain-b:9545
+      - DEPLOYER_PRIVATE_KEY=${DEPLOYER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+      - CONFIRMATION_DEPTH=${CONFIRMATION_DEPTH:-3}
+      - DB_PATH=/usr/src/app/data/bridge.db
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ADDRESSES_PATH=/usr/src/app/data/deployed-addresses.json
+    volumes:
+      # Persist SQLite DB and deployed addresses across container restarts
+      - relayer_data:/usr/src/app/data
+    networks:
+      - bridge-net
+    depends_on:
+      chain-a:
+        condition: service_healthy
+      chain-b:
+        condition: service_healthy
+      deployer:
+        condition: service_completed_successfully
+
+# ─── Named Volumes ────────────────────────────────────────────────────────────
+# Named volume (no bind mount) — works on all platforms including Windows
+volumes:
+  relayer_data:
+
+    # ─── Networks ────────────────────────────────────────────────────────────────
+networks:
+  bridge-net:
+    driver: bridge
